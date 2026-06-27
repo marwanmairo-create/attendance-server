@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, date
 import io
 import csv
+import calendar
 
 app = FastAPI(title="Employee Attendance API")
 
@@ -78,7 +79,7 @@ WORK_START = "11:00"
 WORK_END = "23:00"
 GRACE_MINUTES = 5
 REQUIRED_WORK_HOURS = 12
-LATE_DEDUCTION = 50
+LATE_DEDUCTION = 0
 OVERTIME_HOUR_RATE = 50
 
 
@@ -91,15 +92,13 @@ def today_date():
 
 
 def is_late(check_in_time: str):
-    start = datetime.strptime(WORK_START, "%H:%M")
-    check = datetime.strptime(check_in_time[:5], "%H:%M")
-    diff_minutes = int((check - start).total_seconds() / 60)
-    if diff_minutes <= GRACE_MINUTES:
-        return False, 0
-    return True, diff_minutes
+    # تم إلغاء حساب التأخير نهائيًا بناءً على طلبك.
+    # لا يوجد تأخير في بداية اليوم ولا في نهاية اليوم.
+    return False, 0
 
 
 def calculate_day_values(check_in_time, check_out_time):
+    # التأخير والخصم ملغيين نهائيًا.
     late_minutes = 0
     late_deduction = 0
     worked_hours = 0
@@ -107,28 +106,23 @@ def calculate_day_values(check_in_time, check_out_time):
     overtime_amount = 0
     net_amount = 0
 
-    if check_in_time:
-        start = datetime.strptime(WORK_START, "%H:%M")
-        check = datetime.strptime(check_in_time[:5], "%H:%M")
-        diff_minutes = int((check - start).total_seconds() / 60)
-        if diff_minutes > GRACE_MINUTES:
-            late_minutes = diff_minutes
-            late_deduction = LATE_DEDUCTION
-
     if check_in_time and check_out_time:
         check_in_dt = datetime.strptime(check_in_time, "%H:%M:%S")
         check_out_dt = datetime.strptime(check_out_time, "%H:%M:%S")
         work_minutes = int((check_out_dt - check_in_dt).total_seconds() / 60)
         if work_minutes < 0:
             work_minutes += 24 * 60
+
         worked_hours = round(work_minutes / 60, 2)
+
         required_minutes = REQUIRED_WORK_HOURS * 60
         if work_minutes > required_minutes:
             overtime_minutes = work_minutes - required_minutes
             overtime_hours = round(overtime_minutes / 60, 2)
             overtime_amount = round(overtime_hours * OVERTIME_HOUR_RATE, 2)
 
-    net_amount = overtime_amount - late_deduction
+    net_amount = overtime_amount
+
     return {
         "worked_hours": worked_hours,
         "late_minutes": late_minutes,
@@ -235,7 +229,7 @@ def check_in(data: AttendanceRequest):
 
     check_time = now_time()
     late, late_minutes = is_late(check_time)
-    status = "حاضر" if not late else f"متأخر {late_minutes} دقيقة"
+    status = "حاضر"
 
     cur.execute(
         """
@@ -2299,81 +2293,163 @@ loadEmployees();
     """
 
 
+
 # =========================
-# Desktop Manual Attendance API
+# Mobile Employee Dashboard / Report
 # =========================
 
-class ManualAttendanceSave(BaseModel):
-    employee_code: str
-    attendance_date: str
-    check_in_time: str | None = None
-    check_out_time: str | None = None
-    status: str | None = "حاضر"
+def is_weekly_holiday(date_text):
+    try:
+        d = datetime.strptime(date_text, "%Y-%m-%d").date()
+        # Python: Monday=0 ... Sunday=6
+        return d.weekday() == 6
+    except Exception:
+        return False
 
 
-@app.post("/attendance/manual-save")
-def manual_save_attendance(data: ManualAttendanceSave):
-    employee_code = data.employee_code.strip()
-    attendance_date = data.attendance_date.strip()
-    check_in_time = (data.check_in_time or "").strip() or None
-    check_out_time = (data.check_out_time or "").strip() or None
-    status = (data.status or "حاضر").strip()
+def get_attendance_calendar_for_employee(employee_code, month):
+    month = normalize_month(month)
+    year = int(month[:4])
+    month_number = int(month[5:7])
+    days_count = calendar.monthrange(year, month_number)[1]
 
     conn = get_db()
     cur = conn.cursor()
-
-    cur.execute("SELECT employee_code FROM employees WHERE employee_code = ?", (employee_code,))
-    if not cur.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="الموظف غير موجود")
-
     cur.execute("""
-    SELECT id FROM attendance
-    WHERE employee_code = ? AND attendance_date = ?
-    """, (employee_code, attendance_date))
-    existing = cur.fetchone()
-
-    if existing:
-        cur.execute("""
-        UPDATE attendance
-        SET check_in_time = ?,
-            check_out_time = ?,
-            status = ?
-        WHERE id = ?
-        """, (check_in_time, check_out_time, status, existing[0]))
-    else:
-        cur.execute("""
-        INSERT INTO attendance
-        (
-            employee_code,
-            attendance_date,
-            check_in_time,
-            check_out_time,
-            status,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            employee_code,
-            attendance_date,
-            check_in_time,
-            check_out_time,
-            status,
-            datetime.now().isoformat()
-        ))
-
-    conn.commit()
+    SELECT attendance_date, check_in_time, check_out_time, status
+    FROM attendance
+    WHERE employee_code = ?
+    AND attendance_date LIKE ?
+    ORDER BY attendance_date ASC
+    """, (employee_code.strip(), month + "%"))
+    rows = cur.fetchall()
     conn.close()
 
-    values = calculate_day_values(check_in_time, check_out_time)
+    by_date = {}
+    for row in rows:
+        values = calculate_day_values(row[1], row[2])
+        by_date[row[0]] = {
+            "date": row[0],
+            "check_in": row[1],
+            "check_out": row[2],
+            "worked_hours": values["worked_hours"],
+            "late_minutes": 0,
+            "late_deduction": 0,
+            "overtime_hours": values["overtime_hours"],
+            "overtime_amount": values["overtime_amount"],
+            "status": row[3] or "حاضر",
+            "is_holiday": is_weekly_holiday(row[0]),
+        }
+
+    calendar_rows = []
+    totals = {
+        "attendance_days": 0,
+        "weekly_holidays": 0,
+        "not_registered_days": 0,
+        "total_worked_hours": 0,
+        "total_late_minutes": 0,
+        "total_late_deduction": 0,
+        "total_overtime_hours": 0,
+        "total_overtime_amount": 0,
+    }
+
+    for day in range(1, days_count + 1):
+        date_text = f"{month}-{day:02d}"
+
+        if date_text in by_date:
+            row = by_date[date_text]
+            totals["attendance_days"] += 1
+            totals["total_worked_hours"] += row["worked_hours"]
+            totals["total_overtime_hours"] += row["overtime_hours"]
+            totals["total_overtime_amount"] += row["overtime_amount"]
+            calendar_rows.append(row)
+            continue
+
+        if is_weekly_holiday(date_text):
+            totals["weekly_holidays"] += 1
+            calendar_rows.append({
+                "date": date_text,
+                "check_in": None,
+                "check_out": None,
+                "worked_hours": 0,
+                "late_minutes": 0,
+                "late_deduction": 0,
+                "overtime_hours": 0,
+                "overtime_amount": 0,
+                "status": "إجازة أسبوعية",
+                "is_holiday": True,
+            })
+        else:
+            totals["not_registered_days"] += 1
+            calendar_rows.append({
+                "date": date_text,
+                "check_in": None,
+                "check_out": None,
+                "worked_hours": 0,
+                "late_minutes": 0,
+                "late_deduction": 0,
+                "overtime_hours": 0,
+                "overtime_amount": 0,
+                "status": "لم يسجل",
+                "is_holiday": False,
+            })
+
+    totals["total_worked_hours"] = round(totals["total_worked_hours"], 2)
+    totals["total_overtime_hours"] = round(totals["total_overtime_hours"], 2)
+    totals["total_overtime_amount"] = round(totals["total_overtime_amount"], 2)
+
+    return calendar_rows, totals
+
+
+@app.get("/mobile/employee-dashboard")
+def mobile_employee_dashboard(employee_code: str, month: str | None = None):
+    month = normalize_month(month)
+    employees = get_employee_list(employee_code)
+
+    if not employees:
+        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+
+    employee = employees[0]
+    attendance_rows, attendance_totals = get_attendance_calendar_for_employee(employee_code.strip(), month)
+    finance_items, finance_totals = get_finance_items_for_month(employee_code.strip(), month)
+
+    total_deductions = (
+        finance_totals["advances_total"]
+        + finance_totals["penalties_total"]
+        + finance_totals["manual_deductions_total"]
+    )
+
+    net_salary = (
+        float(employee.get("salary") or 0)
+        + finance_totals["bonuses_total"]
+        + attendance_totals["total_overtime_amount"]
+        - total_deductions
+    )
+
+    salary_summary = {
+        "base_salary": round(float(employee.get("salary") or 0), 2),
+        "attendance_days": attendance_totals["attendance_days"],
+        "weekly_holidays": attendance_totals["weekly_holidays"],
+        "worked_hours": attendance_totals["total_worked_hours"],
+        "late_minutes": 0,
+        "late_deduction": 0,
+        "overtime_hours": attendance_totals["total_overtime_hours"],
+        "overtime_amount": attendance_totals["total_overtime_amount"],
+        "advances_total": finance_totals["advances_total"],
+        "penalties_total": finance_totals["penalties_total"],
+        "manual_deductions_total": finance_totals["manual_deductions_total"],
+        "bonuses_total": finance_totals["bonuses_total"],
+        "total_deductions": round(total_deductions, 2),
+        "net_salary": round(net_salary, 2),
+    }
 
     return {
         "success": True,
-        "message": "تم حفظ الحضور يدويًا بنجاح",
-        "employee_code": employee_code,
-        "date": attendance_date,
-        "check_in": check_in_time,
-        "check_out": check_out_time,
-        "status": status,
-        **values
+        "month": month,
+        "employee": employee,
+        "attendance_summary": attendance_totals,
+        "finance_summary": finance_totals,
+        "salary_summary": salary_summary,
+        "attendance": attendance_rows,
+        "finance_items": finance_items,
     }
