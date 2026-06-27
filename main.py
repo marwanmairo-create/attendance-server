@@ -2297,3 +2297,83 @@ loadEmployees();
 </body>
 </html>
     """
+
+
+# =========================
+# Desktop Manual Attendance API
+# =========================
+
+class ManualAttendanceSave(BaseModel):
+    employee_code: str
+    attendance_date: str
+    check_in_time: str | None = None
+    check_out_time: str | None = None
+    status: str | None = "حاضر"
+
+
+@app.post("/attendance/manual-save")
+def manual_save_attendance(data: ManualAttendanceSave):
+    employee_code = data.employee_code.strip()
+    attendance_date = data.attendance_date.strip()
+    check_in_time = (data.check_in_time or "").strip() or None
+    check_out_time = (data.check_out_time or "").strip() or None
+    status = (data.status or "حاضر").strip()
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT employee_code FROM employees WHERE employee_code = ?", (employee_code,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+
+    cur.execute("""
+    SELECT id FROM attendance
+    WHERE employee_code = ? AND attendance_date = ?
+    """, (employee_code, attendance_date))
+    existing = cur.fetchone()
+
+    if existing:
+        cur.execute("""
+        UPDATE attendance
+        SET check_in_time = ?,
+            check_out_time = ?,
+            status = ?
+        WHERE id = ?
+        """, (check_in_time, check_out_time, status, existing[0]))
+    else:
+        cur.execute("""
+        INSERT INTO attendance
+        (
+            employee_code,
+            attendance_date,
+            check_in_time,
+            check_out_time,
+            status,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            employee_code,
+            attendance_date,
+            check_in_time,
+            check_out_time,
+            status,
+            datetime.now().isoformat()
+        ))
+
+    conn.commit()
+    conn.close()
+
+    values = calculate_day_values(check_in_time, check_out_time)
+
+    return {
+        "success": True,
+        "message": "تم حفظ الحضور يدويًا بنجاح",
+        "employee_code": employee_code,
+        "date": attendance_date,
+        "check_in": check_in_time,
+        "check_out": check_out_time,
+        "status": status,
+        **values
+    }
