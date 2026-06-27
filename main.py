@@ -559,7 +559,7 @@ body{font-family:Arial;background:#f3f4f6;padding:20px;direction:rtl}.box{backgr
 </style>
 </head>
 <body>
-<div class="box"><h2>لوحة إدارة الحضور</h2><a class="monthly-link" href="/monthly">فتح التقرير الشهري</a><a class="monthly-link" href="/payroll">المرتبات والسلف والجزاءات</a><a class="monthly-link" href="/employee-report">تقرير عامل مفصل</a></div>
+<div class="box"><h2>لوحة إدارة الحضور</h2><a class="monthly-link" href="/employees-db">قاعدة بيانات الموظفين</a><a class="monthly-link" href="/monthly">فتح التقرير الشهري</a><a class="monthly-link" href="/payroll">المرتبات والسلف والجزاءات</a><a class="monthly-link" href="/employee-report">تقرير عامل مفصل</a></div>
 <div class="box"><h3>إضافة موظف جديد</h3><input id="new_code" placeholder="كود الموظف"><input id="new_name" placeholder="اسم الموظف"><input id="new_phone" placeholder="رقم الهاتف"><input id="new_password" placeholder="كلمة السر"><input id="new_device" placeholder="كود الجهاز اختياري"><button class="add-btn" onclick="addEmployee()">إضافة الموظف</button><button class="danger-btn" onclick="removeAllDevices()">فك ربط الأجهزة من كل الموظفين</button><div class="msg" id="employee_msg">جاهز لإضافة موظف</div></div>
 <div class="box"><h3>حضور اليوم</h3><button class="refresh-btn" onclick="loadAttendance()">تحديث بيانات الحضور</button><div class="table-wrap"><table><thead><tr><th>كود الموظف</th><th>الاسم</th><th>التاريخ</th><th>الحضور</th><th>الانصراف</th><th>ساعات العمل</th><th>دقائق التأخير</th><th>خصم التأخير</th><th>ساعات الإضافي</th><th>قيمة الإضافي</th><th>صافي اليوم</th><th>الحالة</th></tr></thead><tbody id="attendance_body"><tr><td colspan="12">جاري تحميل البيانات...</td></tr></tbody></table></div></div>
 <div class="box"><h3>قائمة الموظفين</h3><button class="refresh-btn" onclick="loadEmployees()">تحديث قائمة الموظفين</button><div class="table-wrap"><table><thead><tr><th>كود الموظف</th><th>الاسم</th><th>الهاتف</th><th>كود الجهاز</th></tr></thead><tbody id="employees_body"><tr><td colspan="4">جاري تحميل الموظفين...</td></tr></tbody></table></div></div>
@@ -1758,6 +1758,542 @@ async function loadEmployeeReport() {
 setCurrentMonth();
 </script>
 
+</body>
+</html>
+    """
+
+
+
+# =========================
+# Extended Employee Database
+# =========================
+
+def ensure_employee_profile_schema():
+    conn = get_db()
+    cur = conn.cursor()
+
+    columns = {
+        "national_id": "TEXT",
+        "address": "TEXT",
+        "job_title": "TEXT",
+        "department": "TEXT",
+        "hire_date": "TEXT",
+        "salary_type": "TEXT DEFAULT 'monthly'",
+        "work_start": "TEXT DEFAULT '11:00'",
+        "work_end": "TEXT DEFAULT '23:00'",
+        "grace_minutes": "INTEGER DEFAULT 5",
+        "late_deduction_amount": "REAL DEFAULT 50",
+        "overtime_hour_rate": "REAL DEFAULT 50",
+        "employee_status": "TEXT DEFAULT 'active'",
+        "notes": "TEXT"
+    }
+
+    for column, definition in columns.items():
+        try:
+            cur.execute(f"ALTER TABLE employees ADD COLUMN {column} {definition}")
+        except sqlite3.OperationalError:
+            pass
+
+    conn.commit()
+    conn.close()
+
+
+ensure_employee_profile_schema()
+
+
+class EmployeeFullCreate(BaseModel):
+    employee_code: str
+    name: str
+    phone: str | None = None
+    password: str
+    device_id: str | None = None
+    salary: float | None = 0
+    national_id: str | None = None
+    address: str | None = None
+    job_title: str | None = None
+    department: str | None = None
+    hire_date: str | None = None
+    salary_type: str | None = "monthly"
+    work_start: str | None = "11:00"
+    work_end: str | None = "23:00"
+    grace_minutes: int | None = 5
+    late_deduction_amount: float | None = 50
+    overtime_hour_rate: float | None = 50
+    employee_status: str | None = "active"
+    notes: str | None = None
+
+
+class EmployeeProfileUpdate(BaseModel):
+    employee_code: str
+    name: str | None = None
+    phone: str | None = None
+    password: str | None = None
+    device_id: str | None = None
+    salary: float | None = None
+    national_id: str | None = None
+    address: str | None = None
+    job_title: str | None = None
+    department: str | None = None
+    hire_date: str | None = None
+    salary_type: str | None = None
+    work_start: str | None = None
+    work_end: str | None = None
+    grace_minutes: int | None = None
+    late_deduction_amount: float | None = None
+    overtime_hour_rate: float | None = None
+    employee_status: str | None = None
+    notes: str | None = None
+
+
+def employee_row_to_dict(row):
+    return {
+        "employee_code": row[0],
+        "name": row[1],
+        "phone": row[2],
+        "password": row[3],
+        "device_id": row[4],
+        "salary": row[5] or 0,
+        "national_id": row[6],
+        "address": row[7],
+        "job_title": row[8],
+        "department": row[9],
+        "hire_date": row[10],
+        "salary_type": row[11] or "monthly",
+        "work_start": row[12] or "11:00",
+        "work_end": row[13] or "23:00",
+        "grace_minutes": row[14] if row[14] is not None else 5,
+        "late_deduction_amount": row[15] if row[15] is not None else 50,
+        "overtime_hour_rate": row[16] if row[16] is not None else 50,
+        "employee_status": row[17] or "active",
+        "notes": row[18],
+    }
+
+
+@app.get("/employees/full")
+def get_full_employees(employee_code: str | None = None):
+    ensure_employee_profile_schema()
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    select_sql = """
+    SELECT
+        employee_code,
+        name,
+        phone,
+        password,
+        device_id,
+        COALESCE(salary, 0),
+        national_id,
+        address,
+        job_title,
+        department,
+        hire_date,
+        COALESCE(salary_type, 'monthly'),
+        COALESCE(work_start, '11:00'),
+        COALESCE(work_end, '23:00'),
+        COALESCE(grace_minutes, 5),
+        COALESCE(late_deduction_amount, 50),
+        COALESCE(overtime_hour_rate, 50),
+        COALESCE(employee_status, 'active'),
+        notes
+    FROM employees
+    """
+
+    if employee_code:
+        cur.execute(select_sql + " WHERE employee_code = ? ORDER BY name ASC", (employee_code.strip(),))
+    else:
+        cur.execute(select_sql + " ORDER BY name ASC")
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return {
+        "success": True,
+        "employees": [employee_row_to_dict(row) for row in rows]
+    }
+
+
+@app.post("/employees/full-create")
+def create_full_employee(employee: EmployeeFullCreate):
+    ensure_employee_profile_schema()
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+        INSERT INTO employees
+        (
+            employee_code,
+            name,
+            phone,
+            password,
+            device_id,
+            salary,
+            national_id,
+            address,
+            job_title,
+            department,
+            hire_date,
+            salary_type,
+            work_start,
+            work_end,
+            grace_minutes,
+            late_deduction_amount,
+            overtime_hour_rate,
+            employee_status,
+            notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            employee.employee_code.strip(),
+            employee.name.strip(),
+            employee.phone.strip() if employee.phone else None,
+            employee.password.strip(),
+            employee.device_id.strip() if employee.device_id else None,
+            employee.salary or 0,
+            employee.national_id.strip() if employee.national_id else None,
+            employee.address.strip() if employee.address else None,
+            employee.job_title.strip() if employee.job_title else None,
+            employee.department.strip() if employee.department else None,
+            employee.hire_date.strip() if employee.hire_date else None,
+            employee.salary_type or "monthly",
+            employee.work_start or "11:00",
+            employee.work_end or "23:00",
+            employee.grace_minutes if employee.grace_minutes is not None else 5,
+            employee.late_deduction_amount if employee.late_deduction_amount is not None else 50,
+            employee.overtime_hour_rate if employee.overtime_hour_rate is not None else 50,
+            employee.employee_status or "active",
+            employee.notes.strip() if employee.notes else None,
+        ))
+
+        conn.commit()
+
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail="كود الموظف موجود بالفعل")
+
+    conn.close()
+
+    return {
+        "success": True,
+        "message": "تم إنشاء ملف الموظف بنجاح"
+    }
+
+
+@app.post("/employees/update-profile")
+def update_employee_profile(data: EmployeeProfileUpdate):
+    ensure_employee_profile_schema()
+
+    allowed_fields = [
+        "name",
+        "phone",
+        "password",
+        "device_id",
+        "salary",
+        "national_id",
+        "address",
+        "job_title",
+        "department",
+        "hire_date",
+        "salary_type",
+        "work_start",
+        "work_end",
+        "grace_minutes",
+        "late_deduction_amount",
+        "overtime_hour_rate",
+        "employee_status",
+        "notes",
+    ]
+
+    payload = data.model_dump(exclude_unset=True)
+    employee_code = payload.pop("employee_code").strip()
+
+    updates = []
+    values = []
+
+    for field in allowed_fields:
+        if field in payload:
+            value = payload[field]
+            if isinstance(value, str):
+                value = value.strip()
+            if value == "":
+                value = None
+            updates.append(f"{field} = ?")
+            values.append(value)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="لا توجد بيانات لتحديثها")
+
+    values.append(employee_code)
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    UPDATE employees
+    SET {", ".join(updates)}
+    WHERE employee_code = ?
+    """, values)
+
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "message": "تم تحديث بيانات الموظف بنجاح"
+    }
+
+
+# =========================
+# Employee Database Page
+# =========================
+
+@app.get("/employees-db", response_class=HTMLResponse)
+def employees_database_page():
+    return """
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>قاعدة بيانات الموظفين</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body{font-family:Arial;background:#f3f4f6;padding:20px;direction:rtl}
+.box{background:white;padding:20px;border-radius:14px;box-shadow:0 3px 12px rgba(0,0,0,.12);margin-bottom:20px}
+h2,h3{text-align:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+input,select,textarea{width:100%;padding:12px;border:1px solid #ccc;border-radius:8px;font-size:15px;box-sizing:border-box}
+textarea{min-height:80px}
+button,a.btn{padding:12px 18px;color:white;border:none;border-radius:8px;margin:5px 0;font-size:16px;cursor:pointer;text-decoration:none;display:inline-block;text-align:center}
+.add{background:#16a34a}.update{background:#2563eb}.refresh{background:#7c3aed}.back{background:#111827}.msg{margin-top:10px;padding:12px;background:#eef2ff;border-radius:8px;text-align:center;font-weight:bold}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:1350px}
+th{background:#111827;color:white;padding:10px;white-space:nowrap}
+td{padding:9px;border-bottom:1px solid #ddd;text-align:center;white-space:nowrap}
+tr:nth-child(even){background:#f9fafb}
+.small{font-size:12px;color:#555;text-align:center}
+</style>
+</head>
+<body>
+
+<div class="box">
+<h2>قاعدة بيانات الموظفين</h2>
+<div style="text-align:center">
+<a class="btn back" href="/admin">الرجوع للوحة الإدارة</a>
+<a class="btn refresh" href="/payroll">المرتبات والسلف والجزاءات</a>
+<a class="btn refresh" href="/employee-report">تقرير عامل مفصل</a>
+</div>
+<p class="small">هنا يتم تسجيل الملف الكامل لكل موظف: الراتب الأساسي، الوظيفة، القسم، مواعيد العمل، التأخير، الإضافي، وحالة الموظف.</p>
+</div>
+
+<div class="box">
+<h3>إضافة / تعديل ملف موظف</h3>
+
+<div class="grid">
+<input id="employee_code" placeholder="كود الموظف">
+<input id="name" placeholder="اسم الموظف">
+<input id="phone" placeholder="رقم الهاتف">
+<input id="password" placeholder="كلمة السر">
+<input id="device_id" placeholder="كود الجهاز اختياري">
+<input id="salary" type="number" placeholder="الراتب الأساسي">
+<input id="national_id" placeholder="الرقم القومي">
+<input id="address" placeholder="العنوان">
+<input id="job_title" placeholder="الوظيفة">
+<input id="department" placeholder="القسم / الفرع">
+<input id="hire_date" type="date" placeholder="تاريخ التعيين">
+<select id="salary_type">
+<option value="monthly">شهري</option>
+<option value="daily">يومي</option>
+</select>
+<input id="work_start" placeholder="ميعاد الحضور مثال 11:00" value="11:00">
+<input id="work_end" placeholder="ميعاد الانصراف مثال 23:00" value="23:00">
+<input id="grace_minutes" type="number" placeholder="سماح التأخير بالدقائق" value="5">
+<input id="late_deduction_amount" type="number" placeholder="خصم التأخير" value="50">
+<input id="overtime_hour_rate" type="number" placeholder="قيمة ساعة الإضافي" value="50">
+<select id="employee_status">
+<option value="active">نشط</option>
+<option value="inactive">موقوف</option>
+</select>
+</div>
+
+<div style="margin-top:10px">
+<textarea id="notes" placeholder="ملاحظات"></textarea>
+</div>
+
+<button class="add" onclick="createEmployee()">إضافة موظف جديد</button>
+<button class="update" onclick="updateEmployee()">تعديل بيانات الموظف</button>
+<button class="refresh" onclick="loadEmployees()">تحديث القائمة</button>
+
+<div class="msg" id="msg">جاهز</div>
+</div>
+
+<div class="box">
+<h3>ملفات الموظفين</h3>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>اختيار</th>
+<th>الكود</th>
+<th>الاسم</th>
+<th>الهاتف</th>
+<th>الراتب الأساسي</th>
+<th>الوظيفة</th>
+<th>القسم</th>
+<th>تاريخ التعيين</th>
+<th>نوع الراتب</th>
+<th>الحضور</th>
+<th>الانصراف</th>
+<th>السماح</th>
+<th>خصم التأخير</th>
+<th>ساعة الإضافي</th>
+<th>الحالة</th>
+<th>كود الجهاز</th>
+<th>الرقم القومي</th>
+<th>العنوان</th>
+<th>ملاحظات</th>
+</tr>
+</thead>
+<tbody id="employees_body">
+<tr><td colspan="19">جاري تحميل الموظفين...</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<script>
+function val(id){return document.getElementById(id).value.trim();}
+function setVal(id,v){document.getElementById(id).value = v || "";}
+function msg(t){document.getElementById("msg").innerText=t;}
+
+function payload(){
+    return {
+        employee_code: val("employee_code"),
+        name: val("name"),
+        phone: val("phone") || null,
+        password: val("password"),
+        device_id: val("device_id") || null,
+        salary: Number(val("salary") || 0),
+        national_id: val("national_id") || null,
+        address: val("address") || null,
+        job_title: val("job_title") || null,
+        department: val("department") || null,
+        hire_date: val("hire_date") || null,
+        salary_type: val("salary_type") || "monthly",
+        work_start: val("work_start") || "11:00",
+        work_end: val("work_end") || "23:00",
+        grace_minutes: Number(val("grace_minutes") || 5),
+        late_deduction_amount: Number(val("late_deduction_amount") || 50),
+        overtime_hour_rate: Number(val("overtime_hour_rate") || 50),
+        employee_status: val("employee_status") || "active",
+        notes: val("notes") || null
+    };
+}
+
+async function createEmployee(){
+    const p = payload();
+    if(!p.employee_code || !p.name || !p.password){msg("اكتب الكود والاسم وكلمة السر");return;}
+    try{
+        const res = await fetch("/employees/full-create",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify(p)
+        });
+        const data = await res.json();
+        if(!res.ok){msg(data.detail || "حدث خطأ");return;}
+        msg(data.message);
+        loadEmployees();
+    }catch(e){msg("خطأ في الاتصال بالسيرفر");}
+}
+
+async function updateEmployee(){
+    const p = payload();
+    if(!p.employee_code){msg("اكتب كود الموظف المراد تعديله");return;}
+    try{
+        const res = await fetch("/employees/update-profile",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify(p)
+        });
+        const data = await res.json();
+        if(!res.ok){msg(data.detail || "حدث خطأ");return;}
+        msg(data.message);
+        loadEmployees();
+    }catch(e){msg("خطأ في الاتصال بالسيرفر");}
+}
+
+function selectEmployee(e){
+    setVal("employee_code", e.employee_code);
+    setVal("name", e.name);
+    setVal("phone", e.phone);
+    setVal("password", e.password);
+    setVal("device_id", e.device_id);
+    setVal("salary", e.salary);
+    setVal("national_id", e.national_id);
+    setVal("address", e.address);
+    setVal("job_title", e.job_title);
+    setVal("department", e.department);
+    setVal("hire_date", e.hire_date);
+    setVal("salary_type", e.salary_type || "monthly");
+    setVal("work_start", e.work_start || "11:00");
+    setVal("work_end", e.work_end || "23:00");
+    setVal("grace_minutes", e.grace_minutes || 5);
+    setVal("late_deduction_amount", e.late_deduction_amount || 50);
+    setVal("overtime_hour_rate", e.overtime_hour_rate || 50);
+    setVal("employee_status", e.employee_status || "active");
+    setVal("notes", e.notes);
+    msg("تم اختيار الموظف للتعديل: " + e.name);
+    window.scrollTo({top:0, behavior:"smooth"});
+}
+
+async function loadEmployees(){
+    const tbody = document.getElementById("employees_body");
+    try{
+        const res = await fetch("/employees/full");
+        const data = await res.json();
+        tbody.innerHTML="";
+        if(!data.employees || data.employees.length===0){
+            tbody.innerHTML="<tr><td colspan='19'>لا يوجد موظفين</td></tr>";
+            return;
+        }
+        data.employees.forEach(e=>{
+            const safe = JSON.stringify(e).replaceAll("'", "&#39;");
+            tbody.innerHTML += `
+            <tr>
+                <td><button class="update" onclick='selectEmployee(${safe})'>اختيار</button></td>
+                <td>${e.employee_code || ""}</td>
+                <td>${e.name || ""}</td>
+                <td>${e.phone || ""}</td>
+                <td>${e.salary || 0} ج</td>
+                <td>${e.job_title || ""}</td>
+                <td>${e.department || ""}</td>
+                <td>${e.hire_date || ""}</td>
+                <td>${e.salary_type || ""}</td>
+                <td>${e.work_start || ""}</td>
+                <td>${e.work_end || ""}</td>
+                <td>${e.grace_minutes || 0}</td>
+                <td>${e.late_deduction_amount || 0} ج</td>
+                <td>${e.overtime_hour_rate || 0} ج</td>
+                <td>${e.employee_status || ""}</td>
+                <td>${e.device_id || ""}</td>
+                <td>${e.national_id || ""}</td>
+                <td>${e.address || ""}</td>
+                <td>${e.notes || ""}</td>
+            </tr>`;
+        });
+    }catch(e){
+        tbody.innerHTML="<tr><td colspan='19'>حدث خطأ في تحميل الموظفين</td></tr>";
+    }
+}
+
+loadEmployees();
+</script>
 </body>
 </html>
     """
